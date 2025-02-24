@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { supabase } from '../lib/supabase';
 
 export interface HistoryEntry {
   timestamp: string;
@@ -42,107 +43,186 @@ interface TicketContextType {
 const TicketContext = createContext<TicketContextType | undefined>(undefined);
 
 export function TicketProvider({ children }: { children: React.ReactNode }) {
-  const [tickets, setTickets] = useState<Ticket[]>(() => {
-    const savedTickets = localStorage.getItem('tickets');
-    return savedTickets ? JSON.parse(savedTickets) : [];
-  });
+  const [tickets, setTickets] = useState<Ticket[]>([]);
 
   useEffect(() => {
-    localStorage.setItem('tickets', JSON.stringify(tickets));
-  }, [tickets]);
+    const fetchTickets = async () => {
+      const { data, error } = await supabase
+        .from('tickets')
+        .select('*')
+        .order('created_at', { ascending: false });
 
-  const createTicket = (
-    ticketData: Omit<Ticket, 'id' | 'createdAt' | 'updatedAt' | 'history' | 'status' | 'feedback' | 'rating'>
-  ) => {
-    const newTicket: Ticket = {
-      ...ticketData,
-      id: Date.now().toString(),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      status: 'Pendente',
-      history: [
-        {
-          timestamp: new Date().toISOString(),
-          description: 'Chamado criado',
-          type: 'CREATION'
-        },
-      ],
+      if (error) {
+        console.error('Error fetching tickets:', error);
+        return;
+      }
+
+      if (data) {
+        setTickets(data);
+      }
     };
 
-    setTickets((prev) => [...prev, newTicket]);
-  };
+    fetchTickets();
+  }, []);
 
-  const updateTicket = (id: string, updates: Partial<Ticket>) => {
-    setTickets((prev) =>
-      prev.map((ticket) => {
-        if (ticket.id === id) {
-          const historyEntry: HistoryEntry = {
-            timestamp: new Date().toISOString(),
-            description: `Status atualizado para: ${updates.status || ticket.status}`,
-            type: 'STATUS_CHANGE'
-          };
-
-          const updatedTicket = {
-            ...ticket,
-            ...updates,
-            updatedAt: new Date().toISOString(),
-            history: [...ticket.history, historyEntry],
-          };
-          return updatedTicket;
+  const createTicket = async (
+    ticketInput: Omit<Ticket, 'id' | 'createdAt' | 'updatedAt' | 'history' | 'status' | 'feedback' | 'rating'>
+  ) => {
+    const { data: newTicketData, error: ticketError } = await supabase
+      .from('tickets')
+      .insert([
+        {
+          user_id: ticketInput.userId,
+          user_name: ticketInput.userName,
+          sector: ticketInput.sector,
+          problem_type: ticketInput.problemType,
+          urgency: ticketInput.urgency,
+          description: ticketInput.description,
+          status: 'Pendente'
         }
-        return ticket;
-      })
-    );
+      ])
+      .select()
+      .single();
+
+    if (ticketError) {
+      console.error('Error creating ticket:', ticketError);
+      return;
+    }
+
+    if (newTicketData) {
+      const { error: historyError } = await supabase
+        .from('ticket_history')
+        .insert([
+          {
+            ticket_id: newTicketData.id,
+            description: 'Chamado criado',
+            type: 'CREATION'
+          }
+        ]);
+
+      if (historyError) {
+        console.error('Error creating ticket history:', historyError);
+      }
+
+      setTickets((prev) => [newTicketData as Ticket, ...prev]);
+    }
   };
 
-  const updateTicketWithSolution = (id: string, solution: string, status: 'Finalizado') => {
-    setTickets((prev) =>
-      prev.map((ticket) => {
-        if (ticket.id === id) {
-          const historyEntry: HistoryEntry = {
-            timestamp: new Date().toISOString(),
+  const updateTicket = async (id: string, updates: Partial<Ticket>) => {
+    const { data: ticketData, error: ticketError } = await supabase
+      .from('tickets')
+      .update({
+        ...updates,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (ticketError) {
+      console.error('Error updating ticket:', ticketError);
+      return;
+    }
+
+    if (ticketData) {
+      const { error: historyError } = await supabase
+        .from('ticket_history')
+        .insert([
+          {
+            ticket_id: id,
+            description: `Status atualizado para: ${updates.status || ticketData.status}`,
+            type: 'STATUS_CHANGE'
+          }
+        ]);
+
+      if (historyError) {
+        console.error('Error creating ticket history:', historyError);
+      }
+
+      setTickets((prev) =>
+        prev.map((ticket) => ticket.id === id ? ticketData : ticket)
+      );
+    }
+  };
+
+  const updateTicketWithSolution = async (id: string, solution: string, status: 'Finalizado') => {
+    const { data: ticketData, error: ticketError } = await supabase
+      .from('tickets')
+      .update({
+        solution,
+        status,
+        end_time: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (ticketError) {
+      console.error('Error updating ticket with solution:', ticketError);
+      return;
+    }
+
+    if (ticketData) {
+      const { error: historyError } = await supabase
+        .from('ticket_history')
+        .insert([
+          {
+            ticket_id: id,
             description: 'Chamado finalizado com solução',
             type: 'SOLUTION',
-            solution: solution
-          };
+            solution
+          }
+        ]);
 
-          return {
-            ...ticket,
-            solution,
-            status,
-            endTime: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            history: [...ticket.history, historyEntry],
-          };
-        }
-        return ticket;
-      })
-    );
+      if (historyError) {
+        console.error('Error creating ticket history:', historyError);
+      }
+
+      setTickets((prev) =>
+        prev.map((ticket) => ticket.id === id ? ticketData : ticket)
+      );
+    }
   };
 
-  const submitFeedback = (ticketId: string, feedback: string, rating: number) => {
-    setTickets((prev) =>
-      prev.map((ticket) => {
-        if (ticket.id === ticketId) {
-          const historyEntry: HistoryEntry = {
-            timestamp: new Date().toISOString(),
+  const submitFeedback = async (ticketId: string, feedback: string, rating: number) => {
+    const { data: ticketData, error: ticketError } = await supabase
+      .from('tickets')
+      .update({
+        feedback,
+        rating,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', ticketId)
+      .select()
+      .single();
+
+    if (ticketError) {
+      console.error('Error updating ticket feedback:', ticketError);
+      return;
+    }
+
+    if (ticketData) {
+      const { error: historyError } = await supabase
+        .from('ticket_history')
+        .insert([
+          {
+            ticket_id: ticketId,
             description: `Usuário enviou feedback com avaliação ${rating}/10`,
             type: 'FEEDBACK',
             feedback,
             rating
-          };
+          }
+        ]);
 
-          return {
-            ...ticket,
-            feedback,
-            rating,
-            updatedAt: new Date().toISOString(),
-            history: [...ticket.history, historyEntry],
-          };
-        }
-        return ticket;
-      })
-    );
+      if (historyError) {
+        console.error('Error creating ticket history:', historyError);
+      }
+
+      setTickets((prev) =>
+        prev.map((ticket) => ticket.id === ticketId ? ticketData : ticket)
+      );
+    }
   };
 
   const getTicketsByUser = (userId: string) => {
